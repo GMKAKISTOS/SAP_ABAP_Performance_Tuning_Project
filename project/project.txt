@@ -1,0 +1,164 @@
+*&---------------------------------------------------------------------*
+*& Report ZABAP_SYNTAX31
+*&---------------------------------------------------------------------*
+REPORT ZABAP_SYNTAX31 NO STANDARD PAGE HEADING.
+
+DELETE FROM ZEMPLOYEE_MASTE.
+COMMIT WORK.
+DELETE FROM ZEMPLOYEE_MASTER.
+COMMIT WORK.
+DELETE FROM ZEMPLOYEE_COM.
+COMMIT WORK.
+
+" 1) Upload raw text lines, NOT into the typed structure
+DATA: lt_raw   TYPE STANDARD TABLE OF string,
+      lv_line  TYPE string.
+
+DATA: lv_file TYPE string.
+
+SELECTION-SCREEN BEGIN OF BLOCK B1 WITH FRAME TITLE TEXT-001.
+PARAMETERS: P_FILE TYPE LOCALFILE.
+SELECTION-SCREEN END OF BLOCK B1.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR P_FILE.
+
+  DATA: lv_temp_file TYPE rlgrap-filename.
+
+  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+    EXPORTING
+      program_name  = syst-repid
+      dynpro_number = syst-dynnr
+      field_name    = 'P_FILE'
+    CHANGING
+      file_name     = lv_temp_file
+    EXCEPTIONS
+      mask_too_long = 1
+      OTHERS        = 2.
+
+  IF sy-subrc = 0 AND lv_temp_file IS NOT INITIAL.
+    p_file = lv_temp_file.
+  ENDIF.
+
+START-OF-SELECTION.
+
+IF P_FILE IS NOT INITIAL.
+
+  LV_FILE = P_FILE.
+
+  CALL FUNCTION 'GUI_UPLOAD'
+    EXPORTING
+      filename                = LV_FILE
+      filetype                = 'ASC'
+    TABLES
+      data_tab                = lt_raw
+    EXCEPTIONS
+      FILE_OPEN_ERROR         = 1
+      FILE_READ_ERROR         = 2
+      NO_BATCH                = 3
+      GUI_REFUSE_FILETRANSFER = 4
+      INVALID_TYPE            = 5
+      NO_AUTHORITY            = 6
+      UNKNOWN_ERROR           = 7
+      BAD_DATA_FORMAT         = 8
+      HEADER_NOT_ALLOWED      = 9
+      SEPARATOR_NOT_ALLOWED   = 10
+      HEADER_TOO_LONG         = 11
+      UNKNOWN_DP_ERROR        = 12
+      ACCESS_DENIED           = 13
+      DP_OUT_OF_MEMORY        = 14
+      DISK_FULL               = 15
+      DP_TIMEOUT              = 16
+      OTHERS                  = 17.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'File upload failed' TYPE 'E'.
+  ENDIF.
+
+  MESSAGE I000(8I) WITH |file uploaded successfully!|.
+
+  " 2) Structure matching ZEMPLOYEE_MASTE, used for building rows manually
+  TYPES: BEGIN OF ty_employee,
+           MANDT        TYPE MANDT,
+           EMPLOYEE_ID  TYPE ZKEMP_ID,
+           TITLE        TYPE ZKTITLE,
+           FIRST_NAME   TYPE ZKFIRST_NAME,
+           LAST_NAME    TYPE ZKLAST_NAME,
+           DOJ          TYPE ZDATE,
+           INACTIVE     TYPE CHAR1,
+           REPORTING_TO TYPE ZKEMP_ID,
+           IS_MANAGER   TYPE FLAG,
+           DEPARTMENT   TYPE ZKDEPART,
+           CTC          TYPE DMBTR,
+           CURRENCY     TYPE WAERS,
+           BUKRS        TYPE BUKRS,
+         END OF ty_employee.
+
+  DATA: lt_employees TYPE STANDARD TABLE OF ty_employee,
+        ls_employee  TYPE ty_employee,
+        lt_fields    TYPE STANDARD TABLE OF string,
+        lv_doj_str   TYPE string,
+        lv_ctc_str   TYPE string.
+
+  TRY.
+
+      LOOP AT lt_raw INTO lv_line.
+
+        CLEAR: ls_employee, lt_fields, lv_doj_str, lv_ctc_str.
+
+        " 3) Split the ACTUAL current line, into STRING fields first
+        SPLIT lv_line AT ';' INTO TABLE lt_fields.
+
+        READ TABLE lt_fields INDEX 1  INTO ls_employee-mandt.
+        READ TABLE lt_fields INDEX 2  INTO ls_employee-employee_id.
+        READ TABLE lt_fields INDEX 3  INTO ls_employee-title.
+        READ TABLE lt_fields INDEX 4  INTO ls_employee-first_name.
+        READ TABLE lt_fields INDEX 5  INTO ls_employee-last_name.
+
+        READ TABLE lt_fields INDEX 6  INTO lv_doj_str.
+        ls_employee-doj = lv_doj_str.        " YYYYMMDD -> DATS
+
+        READ TABLE lt_fields INDEX 7  INTO ls_employee-inactive.
+        READ TABLE lt_fields INDEX 8  INTO ls_employee-reporting_to.
+        READ TABLE lt_fields INDEX 9  INTO ls_employee-is_manager.
+        READ TABLE lt_fields INDEX 10 INTO ls_employee-department.
+
+        READ TABLE lt_fields INDEX 11 INTO lv_ctc_str.
+        REPLACE ',' IN lv_ctc_str WITH '.'.  " normalize decimal separator if needed
+        ls_employee-ctc = lv_ctc_str.
+
+        READ TABLE lt_fields INDEX 12 INTO ls_employee-currency.
+        READ TABLE lt_fields INDEX 13 INTO ls_employee-bukrs.
+
+        " skip a completely blank line (e.g. trailing newline in file)
+        IF ls_employee-employee_id IS NOT INITIAL.
+          APPEND ls_employee TO lt_employees.
+        ENDIF.
+
+      ENDLOOP.
+
+      INSERT zemployee_maste FROM TABLE lt_employees.
+      IF sy-subrc <> 0.
+        MESSAGE 'Insert failed - check for duplicate keys' TYPE 'E'.
+      ENDIF.
+      COMMIT WORK.
+
+      DATA: NUMBER_OF_ROWS TYPE I.
+
+      SELECT COUNT( * ) FROM ZEMPLOYEE_MASTE INTO NUMBER_OF_ROWS.
+      WRITE: / |Number of rows - before: { NUMBER_OF_ROWS }|.
+
+      "DELETE FROM ZEMPLOYEE_MASTE.
+      "COMMIT WORK.
+
+      "SELECT COUNT( * ) FROM ZEMPLOYEE_MASTE INTO NUMBER_OF_ROWS.
+      "WRITE: / |Number of rows - after: { NUMBER_OF_ROWS }|.
+
+    CATCH CX_ROOT INTO DATA(lx_error).
+      MESSAGE lx_error->get_text( ) TYPE 'E'.
+  ENDTRY.
+
+ELSE.
+  MESSAGE I000(8I) WITH |select the file for upload!|.
+ENDIF.
+
+END-OF-SELECTION.
